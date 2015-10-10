@@ -1,11 +1,16 @@
 package com.github.kxbmap.sbt.jooq
 
+import javax.xml.transform.TransformerFactory
+import javax.xml.transform.dom.DOMSource
+import javax.xml.transform.sax.SAXResult
+import org.joox.JOOX.$
+import org.w3c.dom.Document
 import sbt.Attributed.data
 import sbt.Keys._
 import sbt._
 import sbt.plugins.JvmPlugin
-import scala.xml.transform.{RewriteRule, RuleTransformer}
-import scala.xml.{Elem, XML}
+import scala.xml.XML
+import scala.xml.parsing.NoBindingFactoryAdapter
 
 object JooqCodegen extends AutoPlugin {
 
@@ -23,7 +28,7 @@ object JooqCodegen extends AutoPlugin {
     val jooqCodegen = taskKey[Seq[File]]("Run jOOQ codegen")
     val jooqCodegenConfigFile = settingKey[Option[File]]("jOOQ codegen configuration file")
     val jooqCodegenTargetDirectory = settingKey[File]("jOOQ codegen target directory")
-    val jooqCodegenConfigRewriteRules = settingKey[Seq[RewriteRule]]("jOOQ codegen configuration rewrite rules")
+    val jooqCodegenConfigRewrite = settingKey[Document => Document]("jOOQ codegen configuration rewrite function")
     val jooqCodegenConfig = taskKey[xml.Node]("jOOQ codegen configuration")
     val jooqCodegenStrategy = settingKey[CodegenStrategy]("jOOQ codegen strategy")
 
@@ -40,7 +45,7 @@ object JooqCodegen extends AutoPlugin {
     jooqCodegen <<= codegenTask,
     jooqCodegenConfigFile := None,
     jooqCodegenTargetDirectory <<= sourceManaged in Compile,
-    jooqCodegenConfigRewriteRules <<= configRewriteRules,
+    jooqCodegenConfigRewrite <<= configRewrite,
     jooqCodegenConfig <<= codegenConfigTask,
     jooqCodegenStrategy := CodegenStrategy.IfAbsent,
     sourceGenerators in Compile <+= autoCodegenTask,
@@ -63,26 +68,26 @@ object JooqCodegen extends AutoPlugin {
   ))
 
 
-  def rewriteRule(name0: String)(f: PartialFunction[xml.Node, Seq[xml.Node]]): RewriteRule = new RewriteRule {
-    override val name: String = name0
-    override def transform(n: xml.Node): Seq[xml.Node] = f.applyOrElse(n, (_: xml.Node) => n)
-  }
-
-  private def configRewriteRules = Def.setting {
-    def directory = <directory>{jooqCodegenTargetDirectory.value}</directory>
-    Seq(
-      rewriteRule("replaceTargetDirectory") {
-        case Elem(_, "directory", _, _, _) => directory
-        case e: Elem if e.label == "target" && e.child.forall(_.label != "directory") => e.copy(child = e.child :+ directory)
-      }
-    )
+  private def configRewrite = Def.setting { document: Document =>
+    val p = jooqCodegenTargetDirectory.value.getAbsolutePath
+    val t = $(document).child("generator").child("target")
+    val d = t.child("directory")
+    if (d.isNotEmpty) d.text(p) else t.append($("directory", p))
+    document
   }
 
   private def codegenConfigTask = Def.task {
     val base = baseDirectory.value
     val file = jooqCodegenConfigFile.value.getOrElse(sys.error("required: jooqCodegenConfigFile or jooqCodegenConfig"))
-    val transformer = new RuleTransformer(jooqCodegenConfigRewriteRules.value: _*)
-    transformer(IO.reader(IO.resolve(base, file))(XML.load))
+    val document = $(IO.resolve(base, file)).document()
+    toScalaXml(jooqCodegenConfigRewrite.value(document))
+  }
+
+  private def toScalaXml(document: Document): xml.Node = {
+    val adapter = new NoBindingFactoryAdapter
+    val transformer = TransformerFactory.newInstance().newTransformer()
+    transformer.transform(new DOMSource(document), new SAXResult(adapter))
+    adapter.rootElem
   }
 
   private def codegenTask = Def.task {

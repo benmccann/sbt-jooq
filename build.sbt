@@ -11,3 +11,5 @@ scalacOptions ++= Seq(
   "-feature",
   "-Xlint"
 )
+
+libraryDependencies += "org.jooq" % "joox" % "1.3.0"
